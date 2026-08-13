@@ -1,0 +1,16 @@
+{
+    url httpswww.super-hobby.hu,
+    brands_to_watch [
+        Vallejo,
+        Revell,
+        Tamiya,
+        AK Interactive,
+        AMMO of Mig Jimenez,
+        Mr. Hobby,
+        Italeri,
+        Eduard,
+        MiniArt,
+        Green Stuff World
+    ],
+    request_delay 2
+}
