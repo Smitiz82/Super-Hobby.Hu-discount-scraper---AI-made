@@ -33,6 +33,7 @@ import shutil
 import sqlite3
 import statistics
 import tkinter as tk
+from calendar import monthrange
 
 from collections import Counter
 from datetime import datetime, timedelta
@@ -222,6 +223,18 @@ TYPE_LABELS_EN_TO_INTERNAL = {
 ALL_LABEL = "Összes"
 
 
+def strip_count_suffix(display_text):
+    """'Revell (2)' -> 'Revell'. Used to recover the raw brand name
+    (or ALL_LABEL) from what's shown in the brand dropdown, which is
+    labelled with an entry count."""
+
+    if display_text.endswith(")") and " (" in display_text:
+        base, _, suffix = display_text.rpartition(" (")
+        if suffix[:-1].isdigit():
+            return base
+    return display_text
+
+
 def format_long_date(date_obj, year=None):
     """Example: '2026 Augusztus 13., csütörtök'"""
 
@@ -257,6 +270,45 @@ def format_period_display(date_str, period, promotion_type, year):
         return format_month_name(date_obj, year)
 
     return period
+
+
+def format_date_span(start_date, end_date):
+    """Example: '1 év 2 hónap 6 nap (összesen 432 nap)'
+
+    Counts INCLUSIVELY - if the database has entries dated Aug 12,
+    13 and 14, that's 3 days of data, not 2 (Aug 14 minus Aug 12).
+    So the end date is treated as if it were one day later for the
+    purposes of this calculation."""
+
+    effective_end = end_date + timedelta(days=1)
+
+    total_days = (effective_end - start_date).days
+
+    years = effective_end.year - start_date.year
+    months = effective_end.month - start_date.month
+    days = effective_end.day - start_date.day
+
+    if days < 0:
+        months -= 1
+        prev_month = effective_end.month - 1
+        prev_year = effective_end.year
+        if prev_month == 0:
+            prev_month = 12
+            prev_year -= 1
+        days += monthrange(prev_year, prev_month)[1]
+
+    if months < 0:
+        years -= 1
+        months += 12
+
+    parts = []
+    if years:
+        parts.append(f"{years} év")
+    if months:
+        parts.append(f"{months} hónap")
+    parts.append(f"{days} nap")
+
+    return f"{' '.join(parts)} (összesen {total_days} nap)"
 
 
 # ============================================================
@@ -545,6 +597,40 @@ def get_distinct_brands(conn):
     ).fetchall()
 
     return [r[0] for r in rows]
+
+
+def get_brand_counts(conn):
+    """List of (brand, count) across the whole database, e.g.
+    [('Revell', 2), ('Vallejo', 5)] - used to label the brand
+    dropdown with how many entries each brand has."""
+
+    rows = conn.execute(
+        "SELECT brand, COUNT(*) "
+        "FROM promotions "
+        "GROUP BY brand "
+        "ORDER BY brand"
+    ).fetchall()
+
+    return [(r[0], r[1]) for r in rows]
+
+
+def get_database_span_text(conn):
+    """Human-readable coverage span (oldest to newest date) across
+    the ENTIRE database - deliberately not affected by the current
+    brand/type/year filter, since 'how many days are tracked' is a
+    property of the whole dataset, not of whatever slice is shown."""
+
+    row = conn.execute(
+        "SELECT MIN(date), MAX(date) FROM promotions"
+    ).fetchone()
+
+    if not row or row[0] is None or row[1] is None:
+        return None
+
+    start_date = datetime.strptime(row[0], "%Y-%m-%d").date()
+    end_date = datetime.strptime(row[1], "%Y-%m-%d").date()
+
+    return format_date_span(start_date, end_date)
 
 
 def get_distinct_years(conn):
@@ -1194,21 +1280,21 @@ class PromotionDialog(tk.Toplevel):
 # MAIN DASHBOARD WINDOW
 # ============================================================
 
-class Dashboard(tk.Tk):
+class Dashboard:
 
-    def __init__(self, db_file):
+    def __init__(self, root, db_file):
 
-        super().__init__()
+        self.root = root
 
         self.db_file = Path(db_file)
 
-        self.title(
+        self.root.title(
             "Super-Hobby.hu - Promóció Dashboard"
         )
 
-        self.geometry("1150x680")
+        self.root.geometry("1150x680")
 
-        self.minsize(
+        self.root.minsize(
             950,
             600
         )
@@ -1232,7 +1318,7 @@ class Dashboard(tk.Tk):
                 f"Hiba:\n{e}"
             )
 
-            self.destroy()
+            self.root.destroy()
 
             raise
 
@@ -1249,7 +1335,7 @@ class Dashboard(tk.Tk):
         self._build_stats_panel()
 
         # Close database properly when window closes.
-        self.protocol(
+        self.root.protocol(
             "WM_DELETE_WINDOW",
             self.on_close
         )
@@ -1263,7 +1349,7 @@ class Dashboard(tk.Tk):
     def _build_database_bar(self):
 
         bar = ttk.Frame(
-            self,
+            self.root,
             padding=(10, 10, 10, 0)
         )
 
@@ -1322,7 +1408,7 @@ class Dashboard(tk.Tk):
         )
 
         selected = choose_database(
-            parent=self,
+            parent=self.root,
             initial_dir=current_dir
         )
 
@@ -1402,7 +1488,7 @@ class Dashboard(tk.Tk):
     def _build_filter_bar(self):
 
         bar = ttk.Frame(
-            self,
+            self.root,
             padding=(10, 10, 10, 0)
         )
 
@@ -1425,7 +1511,7 @@ class Dashboard(tk.Tk):
             bar,
             textvariable=self.brand_filter,
             state="readonly",
-            width=20
+            width=26
         )
 
         self.brand_combo.pack(
@@ -1508,7 +1594,7 @@ class Dashboard(tk.Tk):
     def _build_table(self):
 
         table_frame = ttk.Frame(
-            self,
+            self.root,
             padding=10
         )
 
@@ -1601,7 +1687,7 @@ class Dashboard(tk.Tk):
     def _build_action_bar(self):
 
         bar = ttk.Frame(
-            self,
+            self.root,
             padding=(10, 0, 10, 10)
         )
 
@@ -1697,7 +1783,7 @@ class Dashboard(tk.Tk):
     def _build_stats_panel(self):
 
         panel = ttk.LabelFrame(
-            self,
+            self.root,
             text="Elemzés (a jelenlegi szűrésre)",
             padding=10
         )
@@ -1726,6 +1812,10 @@ class Dashboard(tk.Tk):
             (
                 "median_interval",
                 "Medián időköz (nap):"
+            ),
+            (
+                "span_text",
+                "Lefedett időszak (teljes adatbázis):"
             ),
             (
                 "last_date",
@@ -1791,11 +1881,27 @@ class Dashboard(tk.Tk):
 
     def refresh(self):
 
-        brands = [
-            ALL_LABEL
-        ] + get_distinct_brands(
+        brand_counts = get_brand_counts(
             self.conn
         )
+
+        total_count = sum(
+            c for _, c in brand_counts
+        )
+
+        # raw brand name / ALL_LABEL -> its current "Name (N)" label
+        label_for_raw = {
+            ALL_LABEL: f"{ALL_LABEL} ({total_count})"
+        }
+        for brand, count in brand_counts:
+            label_for_raw[brand] = f"{brand} ({count})"
+
+        brands = [
+            label_for_raw[ALL_LABEL]
+        ] + [
+            label_for_raw[brand]
+            for brand, _ in brand_counts
+        ]
 
         years = [
             ALL_LABEL
@@ -1806,10 +1912,17 @@ class Dashboard(tk.Tk):
         self.brand_combo["values"] = brands
         self.year_combo["values"] = years
 
-        if self.brand_filter.get() not in brands:
-            self.brand_filter.set(
-                ALL_LABEL
+        # Keep whichever brand was selected, just with a refreshed
+        # count - or fall back to "Összes" if it no longer exists.
+        raw_selected_brand = strip_count_suffix(
+            self.brand_filter.get()
+        )
+        self.brand_filter.set(
+            label_for_raw.get(
+                raw_selected_brand,
+                label_for_raw[ALL_LABEL]
             )
+        )
 
         if self.year_filter.get() not in years:
             self.year_filter.set(
@@ -1824,7 +1937,7 @@ class Dashboard(tk.Tk):
 
         rows = fetch_promotions(
             self.conn,
-            brand=self.brand_filter.get(),
+            brand=strip_count_suffix(self.brand_filter.get()),
             promotion_type=promotion_type,
             year=self.year_filter.get(),
         )
@@ -1950,6 +2063,15 @@ class Dashboard(tk.Tk):
         )
 
         self.stats_labels[
+            "span_text"
+        ].config(
+            text=(
+                get_database_span_text(self.conn)
+                or "-"
+            )
+        )
+
+        self.stats_labels[
             "last_date"
         ].config(
             text=(
@@ -2032,11 +2154,11 @@ class Dashboard(tk.Tk):
     def add_promotion(self):
 
         dialog = PromotionDialog(
-            self,
+            self.root,
             "Promóció hozzáadása"
         )
 
-        self.wait_window(
+        self.root.wait_window(
             dialog
         )
 
@@ -2091,12 +2213,12 @@ class Dashboard(tk.Tk):
         row = rows[0]
 
         dialog = PromotionDialog(
-            self,
+            self.root,
             "Promóció szerkesztése",
             existing=row
         )
 
-        self.wait_window(
+        self.root.wait_window(
             dialog
         )
 
@@ -2338,7 +2460,7 @@ class Dashboard(tk.Tk):
         except Exception:
             pass
 
-        self.destroy()
+        self.root.destroy()
 
 
 # ============================================================
@@ -2347,9 +2469,13 @@ class Dashboard(tk.Tk):
 
 def main():
 
-    # Create a tiny hidden root window temporarily so that
-    # the database selection dialog can be displayed before
-    # the dashboard itself.
+    # A single Tk root is used for the entire application lifetime -
+    # both the initial database-picker dialog and the dashboard
+    # itself. Creating a second Tk() instance later (e.g. destroying
+    # this one and building a new Tk() for the dashboard) confuses
+    # ttk's theme engine and causes a
+    # "can't invoke event command: application has been destroyed"
+    # error on exit.
     root = tk.Tk()
 
     root.withdraw()
@@ -2360,23 +2486,30 @@ def main():
 
     if db_path is None:
 
-        root.destroy()
-
         messagebox.showinfo(
             "Kilépés",
-            "Nem választottál adatbázist."
+            "Nem választottál adatbázist.",
+            parent=root
         )
+
+        root.destroy()
 
         return
 
-    root.destroy()
+    root.deiconify()
 
-    # Start actual dashboard.
-    app = Dashboard(
-        db_path
-    )
+    # Start actual dashboard on the same root window.
+    try:
+        Dashboard(
+            root,
+            db_path
+        )
+    except Exception:
+        # Dashboard.__init__ already showed an error dialog and
+        # destroyed the root window in this case.
+        return
 
-    app.mainloop()
+    root.mainloop()
 
 
 if __name__ == "__main__":
